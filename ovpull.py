@@ -216,7 +216,7 @@ def clone(pid: str, dest: Path, user: str, env: dict) -> None:
 # --------------------------------------------------------------------------
 
 def git_pull(dest: Path, pid: str, branch: str, user: str, env: dict,
-             push: bool = False, message: str | None = None) -> dict:
+             push: bool = False, message: str | None = None, dry: bool = False) -> dict:
     """Fetch, then fast-forward / merge / push so both sides converge."""
     if not (dest / ".git").exists():
         raise OvError(f"{dest} is not a git repository")
@@ -234,6 +234,10 @@ def git_pull(dest: Path, pid: str, branch: str, user: str, env: dict,
         return result
 
     if is_ancestor(dest, ours, theirs):                     # Overleaf is ahead
+        if dry:                                            # --status must change nothing
+            result["action"] = "behind"
+            result["hint"] = "Overleaf has commits you do not - run --update to fast-forward"
+            return result
         run_git(["-C", str(dest), "merge", "--ff-only", tracking], env=env, no_helper=bool(env))
         result["action"] = "fast-forwarded"
         result["head"] = rev(dest, "HEAD")[:12]
@@ -268,7 +272,8 @@ def git_pull(dest: Path, pid: str, branch: str, user: str, env: dict,
 
 
 def git_status(dest: Path, pid: str, branch: str, user: str, env: dict) -> dict:
-    return git_pull(dest, pid, branch, user, env, push=False)
+    """Report only: fetches (that is unavoidable) but never touches the working copy."""
+    return git_pull(dest, pid, branch, user, env, push=False, dry=True)
 
 
 # --------------------------------------------------------------------------
@@ -393,11 +398,103 @@ def launcher_source(explicit: str | None = None) -> Path:
     return src
 
 
-def install_launcher(dest: Path, explicit: str | None = None) -> dict:
-    """Copy the launchers into `dest` so the pulled project is double-clickable.
+def _claude_context(dest: Path, link: str | None, project_id: str | None,
+                    branch: str, route: str | None) -> list[str]:
+    """Write .claude/ovpull.json + slash commands so the session in this folder
+    knows what the folder is and how to pull/push it - and can be asked to."""
+    claude_dir = dest / ".claude"
+    commands = claude_dir / "commands"
+    commands.mkdir(parents=True, exist_ok=True)
+    me = Path(__file__).resolve()
+    marker = {
+        "generated_by": "ovpull --launcher",
+        "route": route,
+        "link": link,
+        "project_id": project_id,
+        "branch": branch,
+        "project_dir": str(dest),
+        "ovpull": str(me),
+    }
+    (claude_dir / "ovpull.json").write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+    written = [".claude/ovpull.json"]
 
-    In a git clone the paths are added to .git/info/exclude: that file is local
-    only, so the pulled project stays clean and --update keeps working.
+    call = f'python3 "{me}" "{link}" "{dest}"'
+    header = (
+        f"This folder (`{dest}`) was pulled from Overleaf with **ovpull** -- route `{route}`,"
+        f" branch `{branch}`.\n"
+        f"Recorded in `.claude/ovpull.json`.\n\n"
+    )
+    tail = (
+        "\nReport what actually happened (the CLI prints `action`, `head`, `remote_head`, or an"
+        " error) - never invent output. Never pass `--force`, and never touch files outside"
+        " this folder. Reply in the language the user writes in.\n"
+    )
+
+    docs = {}
+    if route == "git":
+        docs["overleaf-status.md"] = (
+            "---\n"
+            "description: Check whether Overleaf is ahead of, or behind, this local copy\n"
+            "---\n" + header +
+            "Run this and report the result:\n\n"
+            f"    {call} --status\n"
+            "\nIt fetches and reports only (`up-to-date`, `behind`, `local-ahead`, `diverged`) and"
+            " changes nothing on disk." + tail
+        )
+        docs["overleaf-pull.md"] = (
+            "---\n"
+            "description: Bring the co-authors' Overleaf edits into this local copy\n"
+            "---\n" + header +
+            "Run this and report the result:\n\n"
+            f"    {call} --update\n"
+            "\nIt refuses to run if there are uncommitted changes (tell the user which files and"
+            " let them decide), and it fast-forwards when Overleaf is ahead." + tail
+        )
+        docs["overleaf-push.md"] = (
+            "---\n"
+            "description: Send local commits to Overleaf, after showing what would go\n"
+            "---\n" + header +
+            "1. Show the user what is about to go, running:\n\n"
+            f"    git -C \"{dest}\" status --short --branch\n"
+            f"    git -C \"{dest}\" log --oneline -5\n"
+            "\n2. Ask the user to confirm before pushing.\n"
+            "3. If they confirm, run:\n\n"
+            f"    {call} --push\n"
+            "\nIf the histories diverged, that creates a merge commit (still a forward step for"
+            " Overleaf) - say so before running it." + tail
+        )
+    else:
+        docs["overleaf-refresh.md"] = (
+            "---\n"
+            "description: Re-download this Overleaf project as a fresh .zip\n"
+            "---\n" + header +
+            "This copy came from a read-only link, so there is no git history: refreshing means"
+            " downloading the project again (files are overwritten, local edits are lost).\n\n"
+            "Before running it, list the files newer than the download and ask the user to"
+            " confirm. Then run:\n\n"
+            f"    {call} --zip\n" + tail
+        )
+
+    for name, text in docs.items():
+        path = commands / name
+        if path.exists():                      # never clobber a command that is already there
+            continue
+        path.write_text(text, encoding="utf-8")
+        written.append(f".claude/commands/{name}")
+    return written
+
+
+def install_launcher(dest: Path, explicit: str | None = None, *, link: str | None = None,
+                     project_id: str | None = None, branch: str = "master",
+                     route: str | None = None) -> dict:
+    """Make the pulled project Claude-ready.
+
+    - copies the double-click launchers into <dest>/launchers
+    - writes <dest>/.claude/ovpull.json and a few /overleaf-* slash commands, so a
+      Claude session started in this folder can be asked to check, pull or push
+    - on a git clone both paths are added to .git/info/exclude: that file is local
+      only, so the project's history is untouched, the tree stays clean and
+      --update keeps working
     """
     src = launcher_source(explicit)
     target = dest / "launchers"
@@ -409,20 +506,25 @@ def install_launcher(dest: Path, explicit: str | None = None) -> dict:
         shutil.copyfile(src / name, to)
         if name.endswith((".sh", ".command")):
             to.chmod(0o755)                      # double-clickable on macOS/Linux
-    excluded = False
+
+    claude_files = _claude_context(dest, link, project_id, branch, route)
+
+    excluded: list[str] = []
     if (dest / ".git").is_dir():
+        wanted = ["launchers/", ".claude/"]
         exclude = dest / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-        if "launchers/" not in text.split():
+        excluded = [w for w in wanted if w not in text.split()]
+        if excluded:
             with exclude.open("a", encoding="utf-8") as fh:
                 if text and not text.endswith("\n"):
                     fh.write("\n")
-                fh.write("# added by ovpull --launcher: keep the tree clean for git pulls\n"
-                         "launchers/\n")
-            excluded = True
+                fh.write("# added by ovpull --launcher: keep the tree clean for git pulls\n")
+                for entry in excluded:
+                    fh.write(f"{entry}\n")
     return {"launcher": str(target), "launcher_files": len(LAUNCHER_FILES),
-            "launcher_git_excluded": excluded}
+            "claude_files": len(claude_files), "launcher_git_excluded": excluded or False}
 
 
 # --------------------------------------------------------------------------
@@ -450,7 +552,8 @@ def main(argv=None) -> int:
                     help="git username for git.overleaf.com (default: git)")
     ap.add_argument("--token-file", default=None, help="read the git token from this file")
     ap.add_argument("--launcher", action="store_true",
-                    help="also drop the double-click Claude launchers into the pulled project")
+                    help="make the pulled project Claude-ready: double-click launchers plus "
+                         "/overleaf-status|pull|push commands for the session started there")
     ap.add_argument("--launcher-from", default=None,
                     help="directory holding the launcher scripts (default: ./launchers next to ovpull.py)")
     ap.add_argument("--print-url", action="store_true", help="print the git URL (no token) and exit")
@@ -489,7 +592,9 @@ def main(argv=None) -> int:
                 note(f"opening {info['url']} in a browser ...")
             result = zip_route(info["url"], dest_root)
             if args.launcher:
-                result.update(install_launcher(Path(result["dest"]), args.launcher_from))
+                result.update(install_launcher(Path(result["dest"]), args.launcher_from,
+                                                link=info["url"], project_id=result["project_id"],
+                                                route="zip"))
             emit(result)
             return 0
 
@@ -511,7 +616,9 @@ def main(argv=None) -> int:
                 result = git_pull(dest, pid, args.branch, args.user, env,
                                   push=args.push, message=args.message)
                 if args.launcher:
-                    result.update(install_launcher(dest, args.launcher_from))
+                    result.update(install_launcher(dest, args.launcher_from, link=info["url"],
+                                                    project_id=pid, branch=args.branch,
+                                                    route="git"))
                 emit(result)
                 return 0
             if args.push:
@@ -524,7 +631,8 @@ def main(argv=None) -> int:
             result = {"route": "git", "action": "cloned", "dest": str(dest),
                       "project_id": pid, "branch": args.branch}
             if args.launcher:
-                result.update(install_launcher(dest, args.launcher_from))
+                result.update(install_launcher(dest, args.launcher_from, link=info["url"],
+                                                project_id=pid, branch=args.branch, route="git"))
             emit(result)
         return 0
     except OvError as exc:

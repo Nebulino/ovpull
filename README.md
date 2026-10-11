@@ -127,6 +127,23 @@ local-only: the project's history is untouched, the working tree stays clean, an
 `ovpull --update` keeps working. Use `--launcher-from <dir>` if the scripts live
 somewhere else.
 
+### Ask the session to push, instead of guessing
+
+`--launcher` also drops `.claude/ovpull.json` (what this folder is: link, project
+id, branch, route, path to `ovpull`) and three slash commands into the project, so
+the Claude session started there knows how to act on it:
+
+| command | what it does |
+|---|---|
+| `/overleaf-status` | fetch and report `up-to-date` / `behind` / `local-ahead` / `diverged` — changes nothing on disk |
+| `/overleaf-pull` | `--update`: fast-forward onto the co-authors' Overleaf edits |
+| `/overleaf-push` | shows `git status` + `git log` first, asks you, then runs `--push` |
+
+Claude Code asks for permission before running a Bash command, so the yes/no is
+always yours; the generated file additionally tells it to show what would go, and
+to warn when a push would have to create a merge. A read-only (`/read/<token>`)
+project gets `/overleaf-refresh` instead — there is no history there to push.
+
 ## Tests
 
 ```sh

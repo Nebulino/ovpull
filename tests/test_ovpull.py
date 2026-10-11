@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Smoke tests for ovpull: link parsing + the whole git sync logic against a
 local bare repository that mimics Overleaf's fast-forward-only rule."""
+import contextlib
+import io
+import json
 import os
 import re
 import subprocess
@@ -184,6 +187,39 @@ check("the git tree stays clean (so --update keeps working)", clean)
 with ovpull.Creds(None) as env:
     st = ovpull.git_pull(dest2, PID, "master", "git", env)
 check("--update still reports up-to-date afterwards", st["action"] == "up-to-date", st)
+marker = json.loads((dest2 / ".claude" / "ovpull.json").read_text())
+check("the .claude marker records this project",
+      marker["project_id"] == PID and marker["route"] == "git" and marker["branch"] == "master"
+      and Path(marker["project_dir"]) == dest2 and Path(marker["ovpull"]).is_file(), marker)
+for name in ("overleaf-status.md", "overleaf-pull.md", "overleaf-push.md"):
+    check(f".claude/commands/{name} written", (dest2 / ".claude" / "commands" / name).is_file())
+push_md = (dest2 / ".claude" / "commands" / "overleaf-push.md").read_text()
+check("the push command tells the session to ask first", "confirm" in push_md)
+check("the push command carries the real invocation", "--push" in push_md and PID in push_md)
+
+# run exactly what the generated command tells Claude to run
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc_status = ovpull.main([str(marker["link"]), str(dest2), "--status", "--json"])
+check("the recorded command actually works",
+      rc_status == 0 and json.loads(buf.getvalue().strip().splitlines()[-1])["action"] == "up-to-date",
+      buf.getvalue())
+
+# --status must never move anything, even when Overleaf is ahead
+seed_sync()
+write(seed / "late.tex", "late arrival\n")
+git("-C", str(seed), "add", ".")
+git("-C", str(seed), "-c", "user.email=a@b.c", "-c", "user.name=seed", "commit", "-qm", "web edit after status")
+git("-C", str(seed), "push", "-q", "origin", "master")
+head_before = ovpull.rev(dest2, "HEAD")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ovpull.main([str(marker["link"]), str(dest2), "--status", "--json"])
+status = json.loads(buf.getvalue().strip().splitlines()[-1])
+check("--status reports 'behind' without touching the copy",
+      status["action"] == "behind" and ovpull.rev(dest2, "HEAD") == head_before, status)
+check("...and says what to do about it", "update" in status.get("hint", ""))
+
 try:
     ovpull.install_launcher(dest2)
     check("a non-empty launchers/ is left alone", False)
@@ -203,10 +239,14 @@ if os.environ.get("OVPULL_TEST_ZIP") == "1":
     check(f"downloaded and extracted {res['files']} files", res["files"] > 0 and tex,
           str(res))
     check("zip is a real archive", zipfile.is_zipfile(res["zip"]))
-    launcher = ovpull.install_launcher(Path(res["dest"]))
+    launcher = ovpull.install_launcher(Path(res["dest"]), link="https://www.overleaf.com/read/jpkfdbgsnbsj",
+                                       project_id=res["project_id"], route="zip")
     check("--launcher works on the zip route too",
           Path(launcher["launcher"], "launch-claude.sh").exists()
           and os.access(Path(launcher["launcher"], "launch-claude.sh"), os.X_OK))
+    check("the zip route gets a refresh command, not a push one",
+          Path(res["dest"], ".claude", "commands", "overleaf-refresh.md").is_file()
+          and not Path(res["dest"], ".claude", "commands", "overleaf-push.md").exists())
 else:
     print("skipped (set OVPULL_TEST_ZIP=1 to run against the network)")
 
