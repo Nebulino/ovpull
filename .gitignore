@@ -4,3 +4,8 @@ __pycache__/
 venv/
 .env
 *.token
+
+# setuptools / wheel leftovers when the package is built locally
+build/
+dist/
+*.egg-info/
