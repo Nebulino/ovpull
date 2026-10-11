@@ -32,7 +32,9 @@ ovpull https://www.overleaf.com/read/<token> ./papers --launcher
 `%USERPROFILE%\.local\bin` on Windows), tell you if that folder is not on `PATH`,
 and stage the launcher scripts so `--launcher` works from any directory later.
 Prefer a package manager? `pipx install .` (or `uv tool install .`) registers the
-same `ovpull` command through the console script.
+same `ovpull` command through the console script — but that route carries no
+launcher scripts, so use the clone plus `./install.sh` (or pass `--launcher-from`)
+if you want `--launcher`.
 
 ## Install
 
