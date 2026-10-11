@@ -33,6 +33,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -280,6 +281,34 @@ def git_status(dest: Path, pid: str, branch: str, user: str, env: dict) -> dict:
 # zip route (no account needed)
 # --------------------------------------------------------------------------
 
+PLAYWRIGHT_PYTHONS = ("python3.14", "python3.13", "python3.12", "python3.11",
+                      "python3.10", "python3", "python")
+
+
+def python_with_playwright() -> str | None:
+    """Another interpreter on this machine that can do the browser step."""
+    forced = os.environ.get("OVPULL_PYTHON")
+    if forced:
+        return forced
+    try:
+        mine = Path(sys.executable).resolve()
+    except OSError:
+        mine = None
+    for name in PLAYWRIGHT_PYTHONS:
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        try:
+            if mine and Path(exe).resolve() == mine:
+                continue                       # that is the one that just failed
+        except OSError:
+            pass
+        probe = subprocess.run([exe, "-c", "import playwright"], capture_output=True)
+        if probe.returncode == 0:
+            return exe
+    return None
+
+
 def slugify(text: str) -> str:
     s = re.sub(r"[^\w.\- ]+", "", text, flags=re.UNICODE).strip()
     return re.sub(r"\s+", "-", s) or "overleaf-project"
@@ -290,10 +319,19 @@ def fetch_zip(link: str) -> dict:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:  # pragma: no cover - environment dependent
+        if not os.environ.get("OVPULL_REEXEC"):
+            better = python_with_playwright()
+            if better:
+                # the shebang picked an interpreter without Playwright - hand over
+                print(f"ovpull: the browser step needs Playwright; re-running with {better}",
+                      file=sys.stderr, flush=True)
+                os.environ["OVPULL_REEXEC"] = "1"
+                os.execv(better, [better, str(Path(__file__).resolve()), *sys.argv[1:]])
         raise OvError(
-            "the zip route needs a browser:\n"
-            "  pip install playwright && playwright install chromium\n"
-            "  (Google Chrome / Edge already installed are used as-is)"
+            "the zip route needs a browser automation layer:\n"
+            "  python3 -m pip install playwright      # with the python you run ovpull with\n"
+            "  (an installed Google Chrome / Edge is used as-is, no browser download)\n"
+            "  or set OVPULL_PYTHON to an interpreter that already has playwright"
         ) from exc
 
     base = web_base()
@@ -528,6 +566,131 @@ def install_launcher(dest: Path, explicit: str | None = None, *, link: str | Non
 
 
 # --------------------------------------------------------------------------
+# put `ovpull` on PATH
+# --------------------------------------------------------------------------
+
+def bin_dir() -> Path:
+    explicit = os.environ.get("OVPULL_BIN_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    if os.name == "nt":
+        return Path(os.path.expandvars(r"%USERPROFILE%\.local\bin"))
+    return Path("~/.local/bin").expanduser()
+
+
+def on_path(directory: Path) -> bool:
+    try:
+        want = directory.resolve()
+    except OSError:
+        return False
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            if Path(entry).expanduser().resolve() == want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def path_hint(directory: Path) -> str:
+    if os.name == "nt":
+        return (f"{directory} is not on your PATH. Add it once, in PowerShell:\n"
+                f"  [Environment]::SetEnvironmentVariable('Path',"
+                f" [Environment]::GetEnvironmentVariable('Path','User') + ';{directory}', 'User')")
+    shell = os.environ.get("SHELL", "/bin/sh")
+    rc = "~/.zshrc" if shell.endswith("zsh") else "~/.bashrc"
+    return (f"{directory} is not on your PATH. Add it to {rc}:\n"
+            f'  export PATH="{directory}:$PATH"')
+
+
+def _runs_python(command: list[str]) -> bool:
+    try:
+        probe = subprocess.run([*command, "--version"], capture_output=True, text=True,
+                               timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0 and "python" in (probe.stdout + probe.stderr).lower()
+
+
+def windows_python() -> str:
+    """Pick the interpreter the Windows shim should call.
+
+    Windows is full of python-shaped traps: the `python.exe` in WindowsApps is a
+    Store alias (opens the Store when the app is absent) and scoop leaves shims
+    behind after a package is removed. So every candidate is asked to answer
+    `--version` first, and only a working one is written into the shim.
+    """
+    options: list[list[str]] = []
+    py = shutil.which("py")
+    if py:
+        options.append([py, "-3"])                   # the official launcher, if present
+    for name in ("python", "python3"):
+        exe = shutil.which(name)
+        if exe and "WindowsApps" not in exe:
+            options.append([exe])
+    for pattern in (r"C:\Python3*\python.exe",
+                    r"%LOCALAPPDATA%\Programs\Python\Python3*\python.exe"):
+        for hit in sorted(glob.glob(os.path.expandvars(pattern)), reverse=True):
+            options.append([hit])
+    alias = shutil.which("python")                    # last resort: the Store alias
+    if alias:
+        options.append([alias])
+    for command in options:
+        if _runs_python(command):
+            return " ".join(f'"{part}"' if " " in part else part for part in command)
+    return "python"
+
+
+def install_command(directory: Path | None = None, overwrite: bool = False) -> dict:
+    """Symlink (or, on Windows, shim) this script into a PATH folder."""
+    me = Path(__file__).resolve()
+    target_dir = directory or bin_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if os.name == "nt":
+        shim = target_dir / "ovpull.cmd"
+        python = windows_python()
+        payload = f'@echo off\r\n{python} "{me}" %*\r\n'
+        if shim.exists() and not overwrite:
+            current = shim.read_text(encoding="utf-8", errors="replace")
+            if str(me) not in current:
+                raise OvError(f"{shim} already exists and is not ours - remove it or pass --overwrite")
+        shim.write_text(payload, encoding="utf-8", newline="")
+    else:
+        shim = target_dir / "ovpull"
+        if shim.is_symlink() and shim.resolve() == me:
+            pass                                   # already ours: idempotent
+        elif shim.exists() and not overwrite:
+            raise OvError(f"{shim} already exists and is not ours - remove it or pass --overwrite")
+        else:
+            if shim.is_symlink() or shim.exists():
+                shim.unlink()
+            try:
+                shim.symlink_to(me)
+            except OSError:                        # no symlink support: copy instead
+                shutil.copyfile(me, shim)
+        shim.chmod(0o755)
+
+    ok = on_path(target_dir)
+    return {"installed": str(shim), "runs": str(me), "bin_dir": str(target_dir),
+            "on_path": ok, "path_hint": "" if ok else path_hint(target_dir),
+            "uninstall": "ovpull --uninstall"}
+
+
+def uninstall_command(directory: Path | None = None) -> dict:
+    target_dir = directory or bin_dir()
+    removed = []
+    for name in ("ovpull", "ovpull.cmd"):
+        candidate = target_dir / name
+        if candidate.is_symlink() or candidate.exists():
+            candidate.unlink()
+            removed.append(str(candidate))
+    return {"removed": removed or "nothing found", "bin_dir": str(target_dir)}
+
+
+# --------------------------------------------------------------------------
 # cli
 # --------------------------------------------------------------------------
 
@@ -538,7 +701,7 @@ def main(argv=None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Token: $OVERLEAF_GIT_TOKEN or ~/.config/ovpull/token (chmod 600).",
     )
-    ap.add_argument("link", help="Overleaf link or project id")
+    ap.add_argument("link", nargs="?", help="Overleaf link or project id")
     ap.add_argument("dest", nargs="?", default=None,
                     help="destination folder (git route: repo dir; zip route: parent folder)")
     ap.add_argument("-u", "--update", action="store_true", help="update an existing clone instead of cloning")
@@ -556,6 +719,14 @@ def main(argv=None) -> int:
                          "/overleaf-status|pull|push commands for the session started there")
     ap.add_argument("--launcher-from", default=None,
                     help="directory holding the launcher scripts (default: ./launchers next to ovpull.py)")
+    ap.add_argument("--install", action="store_true",
+                    help="put `ovpull` on PATH so it runs from any directory")
+    ap.add_argument("--uninstall", action="store_true", help="remove it again")
+    ap.add_argument("--bin-dir", default=None,
+                    help="where to install (default: ~/.local/bin, or "
+                         "%%USERPROFILE%%\\.local\\bin on Windows)")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="replace a file already sitting at that path")
     ap.add_argument("--print-url", action="store_true", help="print the git URL (no token) and exit")
     ap.add_argument("--json", action="store_true", help="machine-readable summary")
     ap.add_argument("-q", "--quiet", action="store_true")
@@ -574,6 +745,17 @@ def main(argv=None) -> int:
         print(msg, file=sys.stderr if args.json else sys.stdout, flush=True)
 
     try:
+        where = Path(args.bin_dir).expanduser() if args.bin_dir else None
+        if args.install or args.uninstall:
+            result = (install_command(where, overwrite=args.overwrite) if args.install
+                      else uninstall_command(where))
+            if result.get("path_hint"):
+                note(result["path_hint"])
+            emit({k: v for k, v in result.items() if v != ""})
+            return 0
+        if not args.link:
+            raise OvError("no link given - run `ovpull <link>`, or `ovpull --install` to put it on PATH")
+
         info = parse_link(args.link)
         token = read_token(Path(args.token_file).expanduser() if args.token_file else token_file())
 

@@ -23,11 +23,19 @@ The link type decides the route; both accept exactly what you copy out of Overle
 python3 ovpull.py --help
 
 # zip route: needs a browser automation layer
-pip install playwright          # then either:
-playwright install chromium     #   bundled chromium, or
-#   ...nothing: an installed Google Chrome / Edge is picked up automatically
-ln -s "$PWD/ovpull.py" /usr/local/bin/ovpull    # optional, gives you `ovpull`
+python3 -m pip install playwright   # with the interpreter you run ovpull with
+#   ...and nothing else: an installed Google Chrome / Edge is used as-is.
+#   (playwright install chromium works too if you prefer a bundled browser.)
+
+# call it from anywhere: symlinks the script into ~/.local/bin (a .cmd shim in
+# %USERPROFILE%\.local\bin on Windows) and tells you if that folder is not on PATH
+python3 ovpull.py --install
+python3 ovpull.py --uninstall      # undo
+python3 ovpull.py --install --bin-dir /usr/local/bin
 ```
+
+If the interpreter that runs `ovpull` has no Playwright, the zip route re-runs
+itself with another Python on `PATH` that does (or with `OVPULL_PYTHON=<exe>`).
 
 ## Use
 

@@ -231,6 +231,78 @@ try:
 except ovpull.OvError as exc:
     check("missing launcher source gives a clear error", "not found" in str(exc))
 
+# ---------------------------------------------------------------- PATH install
+print("\n== putting `ovpull` on PATH ==")
+bindir = tmp / "bin"
+res = ovpull.install_command(bindir)
+shim = Path(res["installed"])
+check("install creates the command", shim.exists() and os.access(shim, os.X_OK), res)
+if os.name != "nt":
+    check("it points at this script", shim.is_symlink() and shim.resolve() == Path(ovpull.__file__).resolve())
+out = subprocess.run([str(shim), "--print-url", f"https://www.overleaf.com/project/{PID}"],
+                     text=True, capture_output=True)
+check("the installed command actually runs", out.returncode == 0 and PID in out.stdout, out.stderr)
+check("installing twice is harmless", Path(ovpull.install_command(bindir)["installed"]) == shim)
+other = tmp / "bin2"
+other.mkdir()
+(other / "ovpull").write_text("not ours\n")
+try:
+    ovpull.install_command(other)
+    check("a foreign file at that path is refused", False)
+except ovpull.OvError as exc:
+    check("a foreign file at that path is refused", "already exists" in str(exc))
+check("--overwrite replaces it",
+      Path(ovpull.install_command(other, overwrite=True)["installed"]).exists())
+check("uninstall removes the command",
+      ovpull.uninstall_command(bindir)["removed"] != "nothing found" and not shim.exists())
+check("no link and no --install is a clear error", ovpull.main([]) == 2)
+
+print("\n== --help ==")
+helped = subprocess.run([sys.executable, str(HERE / "ovpull.py"), "--help"], text=True,
+                        capture_output=True)
+check("--help exits 0 and mentions the install flag",
+      helped.returncode == 0 and "--install" in helped.stdout, helped.stderr[-300:])
+
+print("\n== choosing the interpreter for the Windows shim ==")
+wbin = tmp / "winbin"
+wbin.mkdir()
+broken = wbin / "python3"
+broken.write_text("#!/bin/sh\nexit 1\n")             # a stale scoop-style shim
+broken.chmod(0o755)
+launcher = wbin / "py"
+launcher.write_text('#!/bin/sh\n[ "$1" = "-3" ] && shift\n[ "$1" = "--version" ] && echo "Python 3.12.9"\n')
+launcher.chmod(0o755)
+saved = os.environ.get("PATH", "")
+try:
+    os.environ["PATH"] = str(wbin)                    # only these exist for the probe
+    picked = ovpull.windows_python()
+finally:
+    os.environ["PATH"] = saved
+check("a working py -3 wins over a broken shim", picked.endswith("-3") and "py" in picked, picked)
+launcher.unlink()                                    # only the broken shim is left
+try:
+    os.environ["PATH"] = str(wbin)
+    picked = ovpull.windows_python()
+finally:
+    os.environ["PATH"] = saved
+check("nothing usable falls back to plain `python`", picked == "python", picked)
+
+print("\n== picking a python that has playwright ==")
+fakebin = tmp / "pybin"
+fakebin.mkdir()
+fake = fakebin / "python3.14"
+fake.write_text('#!/bin/sh\nexit 0\n')                       # says yes to every probe
+fake.chmod(0o755)
+saved_path = os.environ.get("PATH", "")
+try:
+    os.environ["PATH"] = f"{fakebin}{os.pathsep}{saved_path}"
+    check("finds another interpreter on PATH", ovpull.python_with_playwright() == str(fake))
+finally:
+    os.environ["PATH"] = saved_path
+os.environ["OVPULL_PYTHON"] = "/opt/forced/python"
+check("OVPULL_PYTHON wins over detection", ovpull.python_with_playwright() == "/opt/forced/python")
+del os.environ["OVPULL_PYTHON"]
+
 print("\n== zip route (real Overleaf read link, needs network) ==")
 if os.environ.get("OVPULL_TEST_ZIP") == "1":
     out = tmp / "zipout"
