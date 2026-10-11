@@ -78,6 +78,38 @@ loaded the read link. So the browser is part of the mechanism, not a convenience
 wrapper. A read link also cannot be git-cloned at all: it carries a share token,
 not a project id.
 
+## Claude launcher — one persistent session per project
+
+`launchers/` opens a Claude Code session in this repo and, from the second time
+on, returns to **the same conversation** instead of starting a new one.
+
+| OS | double-click this | or from a shell |
+|---|---|---|
+| macOS | `launchers/launch-claude.command` | `./launchers/launch-claude.sh` |
+| Linux | — | `./launchers/launch-claude.sh` |
+| Windows | `launchers/launch-claude.bat` | `.\launchers\launch-claude.ps1` |
+
+```
+<launcher> --new              # start a fresh conversation instead of continuing
+<launcher> --dry-run          # print what would run, launch nothing
+<launcher> --model opus       # everything else is forwarded to claude
+```
+
+How it decides: if `~/.claude/projects/<this-folder>/` already holds a transcript,
+it runs `claude --continue`; otherwise it runs `claude` plain. The working
+directory is always the repo root, so the session is scoped to this project.
+The `.bat` bypasses the execution policy for that one call only (nothing on the
+machine is changed) and keeps its window open; `CLAUDE_LAUNCHER_HOLD=0` turns
+that pause off for scripting. Set `CLAUDE_BIN` if `claude` is not on `PATH`.
+
+Both sides are covered by tests that never start a real session — a stub binary
+plays Claude:
+
+```sh
+bash tests/test_launchers.sh                                              # macOS / Linux
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_launchers.ps1   # Windows
+```
+
 ## Tests
 
 ```sh
