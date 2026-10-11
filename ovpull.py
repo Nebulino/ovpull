@@ -548,9 +548,20 @@ def _claude_context(dest: Path, link: str | None, project_id: str | None,
     return written
 
 
+def _install_launcher_quietly(dest: Path, explicit: str | None, strict: bool, **kwargs) -> dict:
+    """install_launcher for the CLI: a cosmetic step must not sink the pull."""
+    try:
+        return install_launcher(dest, explicit, strict=strict, **kwargs)
+    except OvError as exc:
+        if strict:
+            raise
+        return {"launcher": "skipped", "launcher_files": 0, "claude_files": 0,
+                "launcher_git_excluded": False, "launcher_note": str(exc).splitlines()[0]}
+
+
 def install_launcher(dest: Path, explicit: str | None = None, *, link: str | None = None,
                      project_id: str | None = None, branch: str = "master",
-                     route: str | None = None) -> dict:
+                     route: str | None = None, strict: bool = True) -> dict:
     """Make the pulled project Claude-ready.
 
     - copies the double-click launchers into <dest>/launchers
@@ -563,7 +574,13 @@ def install_launcher(dest: Path, explicit: str | None = None, *, link: str | Non
     src = launcher_source(explicit)
     target = dest / "launchers"
     if target.exists() and any(target.iterdir()):
-        raise OvError(f"{target} already exists and is not empty - left untouched")
+        ours = any((target / name).is_file() for name in LAUNCHER_FILES)
+        if not ours:
+            if strict:
+                raise OvError(f"{target} already exists and is not empty - left untouched")
+            return {"launcher": "skipped", "launcher_files": 0, "claude_files": 0,
+                    "launcher_git_excluded": False,
+                    "launcher_note": f"{target} already exists and is not ours - left untouched"}
     target.mkdir(parents=True, exist_ok=True)
     for name in LAUNCHER_FILES:
         to = target / name
@@ -752,9 +769,12 @@ def main(argv=None) -> int:
     ap.add_argument("--user", default=os.environ.get("OVERLEAF_GIT_USER", "git"),
                     help="git username for git.overleaf.com (default: git)")
     ap.add_argument("--token-file", default=None, help="read the git token from this file")
-    ap.add_argument("--launcher", action="store_true",
-                    help="make the pulled project Claude-ready: double-click launchers plus "
-                         "/overleaf-status|pull|push commands for the session started there")
+    ap.add_argument("--launcher", dest="launcher", action="store_const", const="on",
+                    default="default",
+                    help="make the pulled project Claude-ready (default: on) - double-click "
+                         "launchers plus /overleaf-status|pull|push commands for the session there")
+    ap.add_argument("--no-launcher", dest="launcher", action="store_const", const="off",
+                    help="pull the project and touch nothing else")
     ap.add_argument("--launcher-from", default=None,
                     help="directory holding the launcher scripts (default: ./launchers next to ovpull.py)")
     ap.add_argument("--install", action="store_true",
@@ -811,10 +831,10 @@ def main(argv=None) -> int:
             if not args.quiet:
                 note(f"opening {info['url']} in a browser ...")
             result = zip_route(info["url"], dest_root)
-            if args.launcher:
-                result.update(install_launcher(Path(result["dest"]), args.launcher_from,
-                                                link=info["url"], project_id=result["project_id"],
-                                                route="zip"))
+            if args.launcher != "off":
+                result.update(_install_launcher_quietly(
+                    Path(result["dest"]), args.launcher_from, strict=args.launcher == "on",
+                    link=info["url"], project_id=result["project_id"], route="zip"))
             emit(result)
             return 0
 
@@ -835,10 +855,10 @@ def main(argv=None) -> int:
             if args.update or (dest / ".git").exists():
                 result = git_pull(dest, pid, args.branch, args.user, env,
                                   push=args.push, message=args.message)
-                if args.launcher:
-                    result.update(install_launcher(dest, args.launcher_from, link=info["url"],
-                                                    project_id=pid, branch=args.branch,
-                                                    route="git"))
+                if args.launcher != "off":
+                    result.update(_install_launcher_quietly(
+                        dest, args.launcher_from, strict=args.launcher == "on", link=info["url"],
+                        project_id=pid, branch=args.branch, route="git"))
                 emit(result)
                 return 0
             if args.push:
@@ -850,9 +870,10 @@ def main(argv=None) -> int:
             clone(pid, dest, args.user, env)
             result = {"route": "git", "action": "cloned", "dest": str(dest),
                       "project_id": pid, "branch": args.branch}
-            if args.launcher:
-                result.update(install_launcher(dest, args.launcher_from, link=info["url"],
-                                                project_id=pid, branch=args.branch, route="git"))
+            if args.launcher != "off":
+                result.update(_install_launcher_quietly(
+                    dest, args.launcher_from, strict=args.launcher == "on", link=info["url"],
+                    project_id=pid, branch=args.branch, route="git"))
             emit(result)
         return 0
     except OvError as exc:

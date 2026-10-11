@@ -220,11 +220,35 @@ check("--status reports 'behind' without touching the copy",
       status["action"] == "behind" and ovpull.rev(dest2, "HEAD") == head_before, status)
 check("...and says what to do about it", "update" in status.get("hint", ""))
 
+print("\n== the launcher is on by default ==")
+dest3 = tmp / "clone-default"
+rc = ovpull.main([f"https://www.overleaf.com/project/{PID}", str(dest3), "-q"])
+check("a plain pull installs the launchers too",
+      rc == 0 and (dest3 / "launchers" / "launch-claude.sh").exists()
+      and (dest3 / ".claude" / "commands" / "overleaf-push.md").is_file(), rc)
+dest4 = tmp / "clone-bare"
+rc = ovpull.main([f"https://www.overleaf.com/project/{PID}", str(dest4), "--no-launcher", "-q"])
+check("--no-launcher leaves the project alone",
+      rc == 0 and not (dest4 / "launchers").exists() and not (dest4 / ".claude").exists(), rc)
+
+# somebody else's launchers/ folder must never be clobbered by the default path
+foreign = tmp / "foreign"
+(foreign / "launchers").mkdir(parents=True)
+(foreign / "launchers" / "something-else.txt").write_text("not ours\n")
+auto = ovpull._install_launcher_quietly(foreign, None, strict=False, link="https://x/read/t",
+                                        project_id=PID, route="zip")
+check("a foreign launchers/ is skipped, not clobbered",
+      auto["launcher"] == "skipped" and (foreign / "launchers" / "something-else.txt").exists(), auto)
+check("...and the reason is reported, not hidden", "already exists" in auto["launcher_note"], auto)
 try:
-    ovpull.install_launcher(dest2)
-    check("a non-empty launchers/ is left alone", False)
+    ovpull.install_launcher(foreign, strict=True)
+    check("...but an explicit --launcher refuses instead", False)
 except ovpull.OvError as exc:
-    check("a non-empty launchers/ is left alone", "not empty" in str(exc))
+    check("...but an explicit --launcher refuses instead", "already exists" in str(exc))
+
+info = ovpull.install_launcher(dest2)              # our own copy: just refreshed
+check("installing over our own launchers refreshes them",
+      info["launcher_files"] == 4 and (dest2 / "launchers" / "launch-claude.sh").exists(), info)
 try:
     ovpull.install_launcher(dest2, explicit=str(tmp / "nowhere"))
     check("missing launcher source gives a clear error", False)

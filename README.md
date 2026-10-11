@@ -76,8 +76,9 @@ ovpull <same link> ./paper --push -m "Sync my edits"
 ovpull <read link> --zip --json
 ovpull <project link> --print-url
 
-# ...and drop the double-click Claude launchers straight into the pulled project
-ovpull <link> ./papers --launcher
+# the Claude double-click launchers land in the pulled project by default
+ovpull <link> ./papers
+ovpull <link> ./papers --no-launcher   # ...or leave the project exactly as it came
 ```
 
 Destination defaults: git route → `./<project-id>`, zip route → the current
@@ -143,12 +144,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_launchers.ps1   #
 
 ### Putting the launcher inside a pulled project
 
-`ovpull --launcher` copies this `launchers/` folder into the project it just
-pulled, so the double-click lives where the work is:
+`ovpull` copies this `launchers/` folder into the project it just pulled, so the
+double-click lives where the work is — it is the default, no flag needed:
 
 ```sh
-ovpull https://www.overleaf.com/read/<token> ./papers --launcher
+ovpull https://www.overleaf.com/read/<token> ./papers
 ```
+
+`--no-launcher` leaves the project untouched. `--launcher` says it explicitly, and
+in that case a `launchers/` folder that is *not* ours stops the run instead of
+being silently skipped.
 
 On a **git clone** the paths are also written to `.git/info/exclude`, which is
 local-only: the project's history is untouched, the working tree stays clean, and
