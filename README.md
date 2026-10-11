@@ -47,6 +47,9 @@ ovpull <same link> ./paper --push -m "Sync my edits"
 # force a route, or get machine-readable output
 ovpull <read link> --zip --json
 ovpull <project link> --print-url
+
+# ...and drop the double-click Claude launchers straight into the pulled project
+ovpull <link> ./papers --launcher
 ```
 
 Destination defaults: git route → `./<project-id>`, zip route → the current
@@ -109,6 +112,20 @@ plays Claude:
 bash tests/test_launchers.sh                                              # macOS / Linux
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_launchers.ps1   # Windows
 ```
+
+### Putting the launcher inside a pulled project
+
+`ovpull --launcher` copies this `launchers/` folder into the project it just
+pulled, so the double-click lives where the work is:
+
+```sh
+ovpull https://www.overleaf.com/read/<token> ./papers --launcher
+```
+
+On a **git clone** the paths are also written to `.git/info/exclude`, which is
+local-only: the project's history is untouched, the working tree stays clean, and
+`ovpull --update` keeps working. Use `--launcher-from <dir>` if the scripts live
+somewhere else.
 
 ## Tests
 

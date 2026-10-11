@@ -168,6 +168,33 @@ check("--print-url", ovpull.main([f"https://www.overleaf.com/project/{PID}", "--
 rc = ovpull.main(["https://www.overleaf.com/read/jpkfdbgsnbsj", "--git"])
 check("read link + --git is rejected with a clear message", rc == 2)
 
+# ------------------------------------------------------------ launcher install
+print("\n== Claude launcher dropped into the pulled project ==")
+dest2 = tmp / "clone-with-launcher"
+rc = ovpull.main([f"https://www.overleaf.com/project/{PID}", str(dest2), "--launcher", "-q"])
+check("CLI clones and installs the launchers", rc == 0
+      and (dest2 / "launchers" / "launch-claude.sh").exists()
+      and (dest2 / "launchers" / "launch-claude.bat").exists(), rc)
+check("the shell launcher is executable",
+      os.access(dest2 / "launchers" / "launch-claude.sh", os.X_OK))
+check("install is listed in .git/info/exclude",
+      "launchers/" in (dest2 / ".git" / "info" / "exclude").read_text().split())
+clean = git("-C", str(dest2), "status", "--porcelain").stdout.strip() == ""
+check("the git tree stays clean (so --update keeps working)", clean)
+with ovpull.Creds(None) as env:
+    st = ovpull.git_pull(dest2, PID, "master", "git", env)
+check("--update still reports up-to-date afterwards", st["action"] == "up-to-date", st)
+try:
+    ovpull.install_launcher(dest2)
+    check("a non-empty launchers/ is left alone", False)
+except ovpull.OvError as exc:
+    check("a non-empty launchers/ is left alone", "not empty" in str(exc))
+try:
+    ovpull.install_launcher(dest2, explicit=str(tmp / "nowhere"))
+    check("missing launcher source gives a clear error", False)
+except ovpull.OvError as exc:
+    check("missing launcher source gives a clear error", "not found" in str(exc))
+
 print("\n== zip route (real Overleaf read link, needs network) ==")
 if os.environ.get("OVPULL_TEST_ZIP") == "1":
     out = tmp / "zipout"
@@ -176,6 +203,10 @@ if os.environ.get("OVPULL_TEST_ZIP") == "1":
     check(f"downloaded and extracted {res['files']} files", res["files"] > 0 and tex,
           str(res))
     check("zip is a real archive", zipfile.is_zipfile(res["zip"]))
+    launcher = ovpull.install_launcher(Path(res["dest"]))
+    check("--launcher works on the zip route too",
+          Path(launcher["launcher"], "launch-claude.sh").exists()
+          and os.access(Path(launcher["launcher"], "launch-claude.sh"), os.X_OK))
 else:
     print("skipped (set OVPULL_TEST_ZIP=1 to run against the network)")
 

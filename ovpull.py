@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -374,6 +375,57 @@ def zip_route(link: str, dest_root: Path) -> dict:
 
 
 # --------------------------------------------------------------------------
+# optional: drop the double-click Claude launchers into the pulled project
+# --------------------------------------------------------------------------
+
+LAUNCHER_FILES = ("launch-claude.sh", "launch-claude.command",
+                  "launch-claude.ps1", "launch-claude.bat")
+
+
+def launcher_source(explicit: str | None = None) -> Path:
+    src = Path(explicit).expanduser() if explicit else Path(__file__).resolve().parent / "launchers"
+    missing = [f for f in LAUNCHER_FILES if not (src / f).is_file()]
+    if missing:
+        raise OvError(
+            f"launcher files not found in {src} (missing: {', '.join(missing)})\n"
+            "  they ship with the ovpull repo - clone it, or point --launcher-from at them"
+        )
+    return src
+
+
+def install_launcher(dest: Path, explicit: str | None = None) -> dict:
+    """Copy the launchers into `dest` so the pulled project is double-clickable.
+
+    In a git clone the paths are added to .git/info/exclude: that file is local
+    only, so the pulled project stays clean and --update keeps working.
+    """
+    src = launcher_source(explicit)
+    target = dest / "launchers"
+    if target.exists() and any(target.iterdir()):
+        raise OvError(f"{target} already exists and is not empty - left untouched")
+    target.mkdir(parents=True, exist_ok=True)
+    for name in LAUNCHER_FILES:
+        to = target / name
+        shutil.copyfile(src / name, to)
+        if name.endswith((".sh", ".command")):
+            to.chmod(0o755)                      # double-clickable on macOS/Linux
+    excluded = False
+    if (dest / ".git").is_dir():
+        exclude = dest / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if "launchers/" not in text.split():
+            with exclude.open("a", encoding="utf-8") as fh:
+                if text and not text.endswith("\n"):
+                    fh.write("\n")
+                fh.write("# added by ovpull --launcher: keep the tree clean for git pulls\n"
+                         "launchers/\n")
+            excluded = True
+    return {"launcher": str(target), "launcher_files": len(LAUNCHER_FILES),
+            "launcher_git_excluded": excluded}
+
+
+# --------------------------------------------------------------------------
 # cli
 # --------------------------------------------------------------------------
 
@@ -397,6 +449,10 @@ def main(argv=None) -> int:
     ap.add_argument("--user", default=os.environ.get("OVERLEAF_GIT_USER", "git"),
                     help="git username for git.overleaf.com (default: git)")
     ap.add_argument("--token-file", default=None, help="read the git token from this file")
+    ap.add_argument("--launcher", action="store_true",
+                    help="also drop the double-click Claude launchers into the pulled project")
+    ap.add_argument("--launcher-from", default=None,
+                    help="directory holding the launcher scripts (default: ./launchers next to ovpull.py)")
     ap.add_argument("--print-url", action="store_true", help="print the git URL (no token) and exit")
     ap.add_argument("--json", action="store_true", help="machine-readable summary")
     ap.add_argument("-q", "--quiet", action="store_true")
@@ -431,7 +487,10 @@ def main(argv=None) -> int:
             dest_root = Path(args.dest).expanduser() if args.dest else Path.cwd()
             if not args.quiet:
                 note(f"opening {info['url']} in a browser ...")
-            emit(zip_route(info["url"], dest_root))
+            result = zip_route(info["url"], dest_root)
+            if args.launcher:
+                result.update(install_launcher(Path(result["dest"]), args.launcher_from))
+            emit(result)
             return 0
 
         if info["kind"] == "read":
@@ -449,8 +508,11 @@ def main(argv=None) -> int:
                 emit(git_status(dest, pid, args.branch, args.user, env))
                 return 0
             if args.update or (dest / ".git").exists():
-                emit(git_pull(dest, pid, args.branch, args.user, env,
-                              push=args.push, message=args.message))
+                result = git_pull(dest, pid, args.branch, args.user, env,
+                                  push=args.push, message=args.message)
+                if args.launcher:
+                    result.update(install_launcher(dest, args.launcher_from))
+                emit(result)
                 return 0
             if args.push:
                 raise OvError("--push needs an existing clone (or use --update)")
@@ -459,8 +521,11 @@ def main(argv=None) -> int:
             if not args.quiet:
                 note(f"cloning {remote_url(pid, args.user)} -> {dest}")
             clone(pid, dest, args.user, env)
-            emit({"route": "git", "action": "cloned", "dest": str(dest),
-                  "project_id": pid, "branch": args.branch})
+            result = {"route": "git", "action": "cloned", "dest": str(dest),
+                      "project_id": pid, "branch": args.branch}
+            if args.launcher:
+                result.update(install_launcher(dest, args.launcher_from))
+            emit(result)
         return 0
     except OvError as exc:
         print(f"ovpull: {exc}", file=sys.stderr)
