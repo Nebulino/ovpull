@@ -16,6 +16,24 @@ ovpull <link> [dest]
 
 The link type decides the route; both accept exactly what you copy out of Overleaf.
 
+## Quick start
+
+Whoever clones this repo:
+
+```sh
+git clone https://github.com/Nebulino/ovpull && cd ovpull
+./install.sh                                  # macOS / Linux
+# Windows: install.bat (double-click) or  powershell -ExecutionPolicy Bypass -File .\install.ps1
+ovpull https://www.overleaf.com/read/<token> ./papers --launcher
+```
+
+`install.sh` / `install.bat` simply call `ovpull.py --install`: they put the
+`ovpull` command on the `PATH` (a symlink into `~/.local/bin`, a `.cmd` shim in
+`%USERPROFILE%\.local\bin` on Windows), tell you if that folder is not on `PATH`,
+and stage the launcher scripts so `--launcher` works from any directory later.
+Prefer a package manager? `pipx install .` (or `uv tool install .`) registers the
+same `ovpull` command through the console script.
+
 ## Install
 
 ```sh

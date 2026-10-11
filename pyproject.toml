@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovpull"
+version = "0.1.0"
+description = "Pull an Overleaf project from a share link: git sync with a token, or an anonymous .zip fallback."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Nebulino", email = "nebulino.dev@gmail.com" }]
+keywords = ["overleaf", "latex", "git", "cli", "latexmk"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Markup :: LaTeX",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nebulino/ovpull"
+
+[project.scripts]
+ovpull = "ovpull:main"
+
+[project.optional-dependencies]
+# the anonymous .zip route drives a browser; the git route needs nothing
+browser = ["playwright>=1.40"]
+
+[tool.setuptools]
+py-modules = ["ovpull"]

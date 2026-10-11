@@ -257,6 +257,33 @@ check("uninstall removes the command",
       ovpull.uninstall_command(bindir)["removed"] != "nothing found" and not shim.exists())
 check("no link and no --install is a clear error", ovpull.main([]) == 2)
 
+# --install stages the launchers too, so --launcher works from anywhere
+staged = tmp / "staged"
+os.environ["OVPULL_DATA_DIR"] = str(staged)
+try:
+    info = ovpull.install_command(tmp / "bin3")
+    check("--install stages the launcher scripts", info["launchers"] == str(staged)
+          and (staged / "launch-claude.sh").exists(), info)
+    saved_file = ovpull.__file__
+    ovpull.__file__ = str(tmp / "elsewhere" / "ovpull.py")   # pretend no launchers next to us
+    try:
+        found = ovpull.launcher_source()
+    finally:
+        ovpull.__file__ = saved_file
+    check("they are found with no launchers next to the script", Path(found) == staged, found)
+finally:
+    os.environ.pop("OVPULL_DATA_DIR", None)
+
+# the one command a fresh clone runs
+os.environ["OVPULL_DATA_DIR"] = str(tmp / "staged2")
+try:
+    sh_out = subprocess.run(["bash", str(HERE / "install.sh"), "--bin-dir", str(tmp / "shbin")],
+                            text=True, capture_output=True)
+finally:
+    os.environ.pop("OVPULL_DATA_DIR", None)
+check("install.sh installs the command in one go",
+      sh_out.returncode == 0 and (tmp / "shbin" / "ovpull").exists(), sh_out.stderr[-300:])
+
 print("\n== --help ==")
 helped = subprocess.run([sys.executable, str(HERE / "ovpull.py"), "--help"], text=True,
                         capture_output=True)

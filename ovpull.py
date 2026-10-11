@@ -425,15 +425,41 @@ LAUNCHER_FILES = ("launch-claude.sh", "launch-claude.command",
                   "launch-claude.ps1", "launch-claude.bat")
 
 
+def data_dir() -> Path:
+    """Where --install stages the launchers, so they are found from anywhere."""
+    explicit = os.environ.get("OVPULL_DATA_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        return Path(base) / "ovpull" / "launchers"
+    base = os.environ.get("XDG_DATA_HOME") or "~/.local/share"
+    return Path(base).expanduser() / "ovpull" / "launchers"
+
+
 def launcher_source(explicit: str | None = None) -> Path:
-    src = Path(explicit).expanduser() if explicit else Path(__file__).resolve().parent / "launchers"
-    missing = [f for f in LAUNCHER_FILES if not (src / f).is_file()]
-    if missing:
-        raise OvError(
-            f"launcher files not found in {src} (missing: {', '.join(missing)})\n"
-            "  they ship with the ovpull repo - clone it, or point --launcher-from at them"
-        )
-    return src
+    """Find the launcher scripts: explicit flag, $OVPULL_LAUNCHERS, next to the
+    script (a repo clone or the symlink to it), or the copy --install staged."""
+    if explicit:                                    # an explicit path must be right
+        src = Path(explicit).expanduser()
+        missing = [f for f in LAUNCHER_FILES if not (src / f).is_file()]
+        if missing:
+            raise OvError(f"launcher files not found in {src} (missing: {', '.join(missing)})")
+        return src
+
+    candidates: list[Path] = []
+    if os.environ.get("OVPULL_LAUNCHERS"):
+        candidates.append(Path(os.environ["OVPULL_LAUNCHERS"]).expanduser())
+    candidates.append(Path(__file__).resolve().parent / "launchers")
+    candidates.append(data_dir())
+    tried = []
+    for src in candidates:
+        missing = [f for f in LAUNCHER_FILES if not (src / f).is_file()]
+        if not missing:
+            return src
+        tried.append(f"{src}" + (f"  (missing {', '.join(missing)})" if missing else ""))
+    raise OvError("launcher files not found. Looked in:\n  " + "\n  ".join(tried) +
+                  "\n  clone the ovpull repo, run `ovpull --install`, or use --launcher-from")
 
 
 def _claude_context(dest: Path, link: str | None, project_id: str | None,
@@ -673,8 +699,20 @@ def install_command(directory: Path | None = None, overwrite: bool = False) -> d
                 shutil.copyfile(me, shim)
         shim.chmod(0o755)
 
+    staged = ""
+    try:                                              # so `--launcher` works from anywhere
+        src = launcher_source(None)
+        if src.resolve() != data_dir().resolve():
+            data_dir().mkdir(parents=True, exist_ok=True)
+            for name in LAUNCHER_FILES:
+                shutil.copyfile(src / name, data_dir() / name)
+            staged = str(data_dir())
+    except OvError:
+        staged = ""                                   # no launchers around: fine, --launcher will say so
+
     ok = on_path(target_dir)
     return {"installed": str(shim), "runs": str(me), "bin_dir": str(target_dir),
+            "launchers": staged or "not found next to the script (--launcher needs them)",
             "on_path": ok, "path_hint": "" if ok else path_hint(target_dir),
             "uninstall": "ovpull --uninstall"}
 

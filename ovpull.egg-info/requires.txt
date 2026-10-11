@@ -1,0 +1,3 @@
+
+[browser]
+playwright>=1.40
